@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true # 解决 Node.js 20 弃用警告
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   update-modules:
@@ -38,6 +38,7 @@ jobs:
             $catalog = Get-Content "dist/catalog.json" | ConvertFrom-Json
             if ($catalog.version -eq "${{ steps.get_version.outputs.version }}") {
               echo "skip=true" >> $env:GITHUB_OUTPUT
+              Write-Host "Catalog already at version $version. Skipping."
               return
             }
           }
@@ -49,40 +50,70 @@ jobs:
         run: |
           Write-Host "Downloading PowerToys installer..."
           Invoke-WebRequest -Uri "${{ steps.get_version.outputs.download_url }}" -OutFile "PowerToysSetup.exe"
-          $size = (Get-Item "PowerToysSetup.exe").Length / 1MB
-          Write-Host "Downloaded: PowerToysSetup.exe ($([Math]::Round($size, 2)) MB)"
 
-      - name: Extract Modules (The 7-Zip Failsafe Chain)
+      - name: Extract Modules (Universal Recursive Extractor)
         if: steps.check_version.outputs.skip != 'true'
         shell: pwsh
+        env:
+          WIX_ACCEPT_OSMF_EULA: 1
         run: |
-          Write-Host "Stage 1: Breaking the WiX Burn bundle container..."
-          # 使用 7z 直接暴力解开 exe。7z 预装在 GitHub Windows Runner 中，无需安装，无授权问题。
-          7z x PowerToysSetup.exe -oextract_s1 -y
+          Write-Host "--- Stage 1: Toolchain Setup ---"
+          # 强制清理并安装 WiX v5
+          dotnet tool uninstall --global wix | Out-Null
+          dotnet tool install --global wix --version 5.0.2
+          Write-Host "Using WiX version:"
+          wix --version
+
+          Write-Host "--- Stage 2: Multi-Engine Extraction ---"
+          mkdir raw_payload -Force
           
-          Write-Host "Stage 2: Locating the payload container (MSI or attached data)..."
-          # 寻找提取物中最大的文件或 MSI。WiX 捆绑包的真正载荷通常叫 AttachedContainer 或 .msi
-          $payload = Get-ChildItem -Path "extract_s1" -Recurse | Sort-Object Length -Descending | Select-Object -First 1
-          Write-Host "Identified payload: $($payload.FullName) ($($payload.Length / 1MB) MB)"
+          # 策略 A: 官方 WiX 提取 (修正参数)
+          Write-Host "Attempting Official WiX Extraction..."
+          wix burn extract PowerToysSetup.exe -o raw_payload
           
-          Write-Host "Stage 3: Extracting files from payload..."
-          7z x "$($payload.FullName)" -oextract_s2 -y
+          # 策略 B: 7-Zip 尾部数据爆破 (针对 WiX Bundle 的杀手锏)
+          Write-Host "Attempting 7-Zip Tail-Data Extraction..."
+          7z x PowerToysSetup.exe -oextract_7z -y -t# 
           
-          Write-Host "Stage 4: Deep scanning for 'modules' directory..."
-          # 全量扫描所有子目录，寻找含有 'modules' 的文件夹
-          $modulesFolder = Get-ChildItem -Path "extract_s2" -Directory -Recurse | Where-Object { Test-Path (Join-Path $_.FullName "modules") } | Select-Object -First 1
+          Write-Host "--- Stage 3: Deep Search and Unpack ---"
+          # 合并所有可能的载荷
+          $searchPaths = @("raw_payload", "extract_7z")
+          $targetMsi = $null
+          
+          foreach ($p in $searchPaths) {
+              if (Test-Path $p) {
+                  $msi = Get-ChildItem -Path $p -Filter "*.msi" -Recurse | Select-Object -First 1
+                  if ($msi) { $targetMsi = $msi.FullName; break }
+              }
+          }
+
+          if ($null -eq $targetMsi) {
+              Write-Warning "No MSI found. Checking for large binary blobs (CABs/Streams)..."
+              $blob = Get-ChildItem -Path $searchPaths -Recurse | Where-Object { $_.Length -gt 50MB } | Sort-Object Length -Descending | Select-Object -First 1
+              if ($blob) {
+                  Write-Host "Found large blob: $($blob.FullName). Attempting brute force extraction..."
+                  7z x "$($blob.FullName)" -ofinal_unpack -y
+              }
+          } else {
+              Write-Host "MSI detected: $targetMsi. Extracting contents..."
+              7z x "$targetMsi" -ofinal_unpack -y
+          }
+
+          Write-Host "--- Stage 4: Location Radar ---"
+          # 终极全盘扫描
+          $modulesFolder = Get-ChildItem -Path "$env:GITHUB_WORKSPACE" -Directory -Recurse | Where-Object { Test-Path (Join-Path $_.FullName "modules") } | Select-Object -First 1
           
           if ($null -eq $modulesFolder) {
-             Write-Error "CRITICAL ERROR: Failed to find 'modules' folder in the entire extraction tree."
-             Write-Host "=== Full Extraction Tree for Debugging ==="
-             Get-ChildItem -Path "extract_s2" -Recurse | Select-Object FullName
-             throw "Extraction failed: Target directory missing."
+              Write-Error "CRITICAL: Modules folder not found in any extraction path."
+              Write-Host "Listing all directories for post-mortem analysis:"
+              Get-ChildItem -Path "$env:GITHUB_WORKSPACE" -Directory -Recurse | Select-Object FullName
+              throw "Extraction pipeline exhausted."
           }
 
           $modulesParent = $modulesFolder.FullName
-          Write-Host "SUCCESS: Modules located at: $modulesParent"
+          Write-Host "TARGET ACQUIRED: $modulesParent"
 
-          # 运行最终提取工具
+          # 运行提取脚本
           .\tools\PowerToys-Extractor.ps1 -SourcePath "$modulesParent" -DistPath "publish_dist" -Version "${{ steps.get_version.outputs.version }}" -BaseUrl "https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.version }}/"
 
       - name: Create Release and Upload Assets
@@ -106,29 +137,4 @@ jobs:
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           git add dist/catalog.json
           git commit -m "chore: sync catalog to ${{ steps.get_version.outputs.version }}"
-          git push
-
-      - name: Create Release and Upload Assets
-        if: steps.check_version.outputs.skip != 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.get_version.outputs.version }}
-          files: |
-            publish_dist/modules/*.zip
-            publish_dist/catalog.json
-          body: |
-            Automated update to PowerToys ${{ steps.get_version.outputs.version }}
-            
-            This release contains the split modules for the dynamic installation feature.
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Update repository catalog
-        if: steps.check_version.outputs.skip != 'true'
-        shell: pwsh
-        run: |
-          Copy-Item "publish_dist/catalog.json" "dist/catalog.json" -Force
-          git config --global user.name 'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          git add dist/catalog.json
-          git commit -m "chore: update catalog to ${{ steps.get_version.outputs.version }}"
           git push
