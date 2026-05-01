@@ -1,5 +1,6 @@
 using System.IO.Pipes;
 using System.Text;
+using System.Text.Json;
 
 namespace PowerToys.InstallerService;
 
@@ -74,29 +75,63 @@ public class Worker : BackgroundService
         {
             _logger.LogInformation("Processing installation for {moduleName}", moduleName);
             
-            // Mock URL and destination
-            string url = $"https://example.com/powertoys/modules/{moduleName}.zip";
+            // 1. Locate catalog.json
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            string catalogPath = Path.Combine(baseDir, "catalog.json");
+            if (!File.Exists(catalogPath)) {
+                catalogPath = Path.Combine(Directory.GetParent(baseDir).FullName, "catalog.json");
+            }
+
+            if (!File.Exists(catalogPath)) {
+                return "ERROR: catalog.json not found";
+            }
+
+            // 2. Parse catalog and find module
+            var json = await File.ReadAllTextAsync(catalogPath, cancellationToken);
+            using var doc = JsonDocument.Parse(json);
+            var modules = doc.RootElement.GetProperty("modules");
+            
+            string downloadUrl = null;
+            foreach (var module in modules.EnumerateArray()) {
+                if (module.GetProperty("id").GetString().Equals(moduleName, StringComparison.OrdinalIgnoreCase)) {
+                    downloadUrl = module.GetProperty("download_url").GetString();
+                    break;
+                }
+            }
+
+            if (string.IsNullOrEmpty(downloadUrl)) {
+                return $"ERROR: Module {moduleName} not found in catalog";
+            }
+
+            // 3. Prepare directories
             string tempDir = Path.Combine(Path.GetTempPath(), "PowerToysInstaller");
             Directory.CreateDirectory(tempDir);
-
-            // In a real test, this would fail because the URL is mock.
-            // For now, we will mock the result of the download if it's a test case.
-            if (moduleName == "ColorPicker")
-            {
-                _logger.LogInformation("Mocking successful download and verification for ColorPicker");
-                return "SUCCESS: ColorPicker installed";
-            }
             
-            if (moduleName == "malicious_tool")
-            {
-                _logger.LogWarning("Failing verification for malicious_tool");
+            string installDir = Directory.GetParent(baseDir).FullName;
+            string modulesDir = Path.Combine(installDir, "modules");
+
+            // 4. Download
+            _logger.LogInformation("Downloading {moduleName} from {url}", moduleName, downloadUrl);
+            string zipPath = await _packageHandler.DownloadPackageAsync(downloadUrl, tempDir, null, cancellationToken);
+
+            // 5. Verify
+            if (!_packageHandler.VerifySignature(zipPath)) {
+                File.Delete(zipPath);
                 return "ERROR: Signature verification failed";
             }
 
-            return $"ERROR: Installation failed for {moduleName}";
+            // 6. Extract
+            _logger.LogInformation("Extracting {moduleName} to {modulesDir}", moduleName, modulesDir);
+            await _packageHandler.ExtractAsync(zipPath, modulesDir);
+            
+            // Cleanup
+            File.Delete(zipPath);
+
+            return $"SUCCESS: {moduleName} installed";
         }
         catch (Exception ex)
         {
+            _logger.LogError(ex, "Installation failed for {moduleName}", moduleName);
             return $"ERROR: {ex.Message}";
         }
     }

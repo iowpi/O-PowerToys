@@ -52,12 +52,25 @@ jobs:
         if: steps.check_version.outputs.skip != 'true'
         shell: pwsh
         run: |
-          # 模拟安装以获取文件进行拆分（在 GitHub Actions 环境中）
-          Start-Process -FilePath ".\PowerToysSetup.exe" -ArgumentList "/passive", "/norestart", "/extract" -Wait
+          Write-Host "Creating layout for PowerToysSetup.exe..."
+          # Layout the installer to get the MSI
+          Start-Process -FilePath ".\PowerToysSetup.exe" -ArgumentList "/quiet", "/layout", "$env:GITHUB_WORKSPACE\extracted_layout" -Wait
           
-          # 运行我们的提取脚本
-          # 假设提取后的路径在 $env:TEMP\PowerToys
-          .\tools\PowerToys-Extractor.ps1 -SourcePath "C:\Program Files\PowerToys" -DistPath "publish_dist" -BaseUrl "https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.version }}/"
+          # Find the main x64 MSI
+          $msiPath = Get-ChildItem -Path "$env:GITHUB_WORKSPACE\extracted_layout" -Filter "PowerToysSetup-*-x64.msi" -Recurse | Select-Object -First 1 -ExpandProperty FullName
+          Write-Host "Found MSI at: $msiPath"
+          
+          # Perform Administrative Install to a temporary directory to get the files
+          Write-Host "Performing administrative install of MSI..."
+          $installDir = "$env:GITHUB_WORKSPACE\temp_install"
+          Start-Process -FilePath "msiexec.exe" -ArgumentList "/a", "`"$msiPath`"", "/qb", "TARGETDIR=`"$installDir`"" -Wait
+          
+          # Find where the 'modules' folder ended up (usually under 'PFiles/PowerToys' in an admin install)
+          $modulesParent = Get-ChildItem -Path "$installDir" -Directory -Recurse | Where-Object { Test-Path (Join-Path $_.FullName "modules") } | Select-Object -First 1 -ExpandProperty FullName
+          Write-Host "Modules parent found at: $modulesParent"
+          
+          # Run our extraction tool on the temporary install
+          .\tools\PowerToys-Extractor.ps1 -SourcePath "$modulesParent" -DistPath "publish_dist" -Version "${{ steps.get_version.outputs.version }}" -BaseUrl "https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.version }}/"
 
       - name: Create Release and Upload Assets
         if: steps.check_version.outputs.skip != 'true'

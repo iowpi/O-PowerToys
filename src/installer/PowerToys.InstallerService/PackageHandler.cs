@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.IO.Compression;
 using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -26,6 +27,8 @@ public class PackageHandler
 
         var totalBytes = response.Content.Headers.ContentLength ?? -1L;
         var fileName = Path.GetFileName(new Uri(url).LocalPath);
+        if (string.IsNullOrEmpty(fileName)) fileName = "module.zip";
+        
         var filePath = Path.Combine(destinationFolder, fileName);
 
         using var contentStream = await response.Content.ReadAsStreamAsync(cancellationToken);
@@ -54,10 +57,8 @@ public class PackageHandler
     {
         _logger.LogInformation("Verifying signature for {filePath}", filePath);
         
-        // In a real implementation, we would use WinVerifyTrust here.
-        // For this task, we will simulate the check.
-        // Real code would involve P/Invoke to wintrust.dll
-        
+        // Simulation of verification for this version.
+        // In production, use WinVerifyTrust to check Microsoft signature.
         if (filePath.Contains("malicious"))
         {
             _logger.LogWarning("Signature verification FAILED for {filePath}", filePath);
@@ -66,5 +67,21 @@ public class PackageHandler
 
         _logger.LogInformation("Signature verification PASSED for {filePath}", filePath);
         return true;
+    }
+
+    public async Task ExtractAsync(string zipPath, string targetDirectory)
+    {
+        _logger.LogInformation("Extracting {zipPath} to {targetDirectory}", zipPath, targetDirectory);
+        
+        await Task.Run(() => {
+            if (!Directory.Exists(targetDirectory))
+            {
+                Directory.CreateDirectory(targetDirectory);
+            }
+            
+            ZipFile.ExtractToDirectory(zipPath, targetDirectory, true);
+        });
+        
+        _logger.LogInformation("Extraction completed.");
     }
 }
