@@ -52,51 +52,67 @@ jobs:
       - name: Extract Modules
         if: steps.check_version.outputs.skip != 'true'
         shell: pwsh
+        env:
+          WIX_ACCEPT_OSMF_EULA: 1 # 终极武器：如果强行运行了 v7，直接静默接受其开源许可
         run: |
-          Write-Host "Installing WiX Toolset CLI v5 (Stable)..."
-          # 显式安装 v5.0.2，避开 v7 的 OSMF 许可问题
+          Write-Host "Cleaning up potential WiX tool conflicts..."
+          dotnet tool uninstall --global wix | Out-Null
+          
+          Write-Host "Installing WiX Toolset CLI v5.0.2..."
           dotnet tool install --global wix --version 5.0.2
           
-          Write-Host "Extracting PowerToysSetup.exe using WiX v5..."
-          if (!(Test-Path "PowerToysSetup.exe")) { throw "PowerToysSetup.exe not found!" }
+          # 检查版本确保万无一失
+          $wixVersion = wix --version
+          Write-Host "Running WiX version: $wixVersion"
           
-          # 执行提取
-          mkdir extracted_wix
-          wix burn extract PowerToysSetup.exe -out extracted_wix
+          Write-Host "Attempting extraction via WiX CLI..."
+          mkdir extracted_payload -Force
+          # 修正参数顺序：-o 在前，bundle 在后
+          wix burn extract -o extracted_payload PowerToysSetup.exe
           
-          # 寻找 MSI (支持任意命名)
-          $msiPath = Get-ChildItem -Path "extracted_wix" -Filter "*.msi" -Recurse | Select-Object -First 1 -ExpandProperty FullName
-          Write-Host "Target MSI identified: $msiPath"
+          # 检查 WiX 是否真的提取出了内容
+          $files = Get-ChildItem -Path "extracted_payload" -Recurse
+          if ($null -eq $files -or $files.Count -lt 2) {
+             Write-Warning "WiX extraction produced empty results. Falling back to 7-Zip brute force..."
+             7z x PowerToysSetup.exe -oextracted_payload -y
+          }
+          
+          # 第一阶段：在提取物中寻找任意 MSI
+          Write-Host "Searching for MSI payload..."
+          $msiPath = Get-ChildItem -Path "extracted_payload" -Filter "*.msi" -Recurse | Select-Object -First 1 -ExpandProperty FullName
           
           if ($null -eq $msiPath) {
-            Write-Error "No MSI found in bundle. Full directory structure for debugging:"
-            Get-ChildItem -Path "extracted_wix" -Recurse | Select-Object FullName
-            throw "Extraction failed: MSI payload not found."
+             Write-Error "CRITICAL: No MSI found in extracted payload. Directory listing:"
+             Get-ChildItem -Path "extracted_payload" -Recurse | Select-Object FullName
+             throw "Extraction failed at stage 1."
           }
+          Write-Host "Found MSI: $msiPath"
 
-          # 使用 Windows 官方 msiexec /a 提取文件 (这是最稳健的方法)
-          Write-Host "Performing administrative extraction of MSI..."
-          $msiInstallDir = "$env:GITHUB_WORKSPACE\msi_install"
+          # 第二阶段：行政提取 MSI 内容
+          Write-Host "Extracting MSI contents via msiexec..."
+          $msiInstallDir = "$env:GITHUB_WORKSPACE\msi_flat"
+          mkdir $msiInstallDir -Force
           $process = Start-Process -FilePath "msiexec.exe" -ArgumentList "/a", "`"$msiPath`"", "/qb", "TARGETDIR=`"$msiInstallDir`"" -PassThru -Wait
           
           if ($process.ExitCode -ne 0) {
-            throw "msiexec failed with exit code $($process.ExitCode)"
+             Write-Warning "msiexec failed (code $($process.ExitCode)). Trying 7-Zip extraction for MSI..."
+             7z x "$msiPath" -o$msiInstallDir -y
           }
 
-          # 动态定位 modules 目录 (不再硬编码路径)
-          Write-Host "Scanning for 'modules' directory..."
+          # 第三阶段：动态嗅探 modules 文件夹 (深度优先搜索)
+          Write-Host "Locating 'modules' directory..."
           $modulesFolder = Get-ChildItem -Path "$msiInstallDir" -Directory -Recurse | Where-Object { Test-Path (Join-Path $_.FullName "modules") } | Select-Object -First 1
           
           if ($null -eq $modulesFolder) {
-            Write-Error "Could not find 'modules' folder. Listing all extracted directories for debugging:"
-            Get-ChildItem -Path "$msiInstallDir" -Directory -Recurse | Select-Object FullName
-            throw "Failed to locate modules folder in extracted MSI."
+             Write-Error "CRITICAL: Could not find 'modules' folder in MSI. Listing all directories:"
+             Get-ChildItem -Path "$msiInstallDir" -Directory -Recurse | Select-Object FullName
+             throw "Extraction failed at stage 3."
           }
 
           $modulesParent = $modulesFolder.FullName
-          Write-Host "Successfully located modules at: $modulesParent"
+          Write-Host "SUCCESS: Modules located at $modulesParent"
 
-          # 运行提取工具
+          # 运行最终提取工具
           .\tools\PowerToys-Extractor.ps1 -SourcePath "$modulesParent" -DistPath "publish_dist" -Version "${{ steps.get_version.outputs.version }}" -BaseUrl "https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.version }}/"
 
       - name: Create Release and Upload Assets
