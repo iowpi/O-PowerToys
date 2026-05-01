@@ -11,6 +11,7 @@ permissions:
 jobs:
   update-modules:
     runs-on: windows-latest
+    timeout-minutes: 30 # 安全起见，设置 30 分钟超时
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -52,24 +53,27 @@ jobs:
         if: steps.check_version.outputs.skip != 'true'
         shell: pwsh
         run: |
-          Write-Host "Creating layout for PowerToysSetup.exe..."
-          # Layout the installer to get the MSI
-          Start-Process -FilePath ".\PowerToysSetup.exe" -ArgumentList "/quiet", "/layout", "$env:GITHUB_WORKSPACE\extracted_layout" -Wait
+          Write-Host "Extracting PowerToysSetup.exe using 7-Zip..."
+          # 使用 7z 提取 Burn Bundle 内的内容 (不运行安装程序)
+          7z x PowerToysSetup.exe -oextracted_bundle
           
-          # Find the main x64 MSI
-          $msiPath = Get-ChildItem -Path "$env:GITHUB_WORKSPACE\extracted_layout" -Filter "PowerToysSetup-*-x64.msi" -Recurse | Select-Object -First 1 -ExpandProperty FullName
+          # 在提取出的目录中查找 MSI 文件 (通常在 AttachedContainer 目录下)
+          $msiPath = Get-ChildItem -Path "extracted_bundle" -Filter "*.msi" -Recurse | Select-Object -First 1 -ExpandProperty FullName
           Write-Host "Found MSI at: $msiPath"
           
-          # Perform Administrative Install to a temporary directory to get the files
-          Write-Host "Performing administrative install of MSI..."
-          $installDir = "$env:GITHUB_WORKSPACE\temp_install"
-          Start-Process -FilePath "msiexec.exe" -ArgumentList "/a", "`"$msiPath`"", "/qb", "TARGETDIR=`"$installDir`"" -Wait
+          # 使用 7z 提取 MSI 内的文件 (比 msiexec /a 更安全，不会挂起)
+          Write-Host "Extracting MSI contents..."
+          7z x "$msiPath" -otemp_install
           
-          # Find where the 'modules' folder ended up (usually under 'PFiles/PowerToys' in an admin install)
-          $modulesParent = Get-ChildItem -Path "$installDir" -Directory -Recurse | Where-Object { Test-Path (Join-Path $_.FullName "modules") } | Select-Object -First 1 -ExpandProperty FullName
+          # 查找真正的 modules 目录位置
+          $modulesParent = Get-ChildItem -Path "temp_install" -Directory -Recurse | Where-Object { Test-Path (Join-Path $_.FullName "modules") } | Select-Object -First 1 -ExpandProperty FullName
           Write-Host "Modules parent found at: $modulesParent"
           
-          # Run our extraction tool on the temporary install
+          if ($null -eq $modulesParent) {
+            throw "Failed to locate 'modules' directory in the extracted files."
+          }
+
+          # 运行提取工具
           .\tools\PowerToys-Extractor.ps1 -SourcePath "$modulesParent" -DistPath "publish_dist" -Version "${{ steps.get_version.outputs.version }}" -BaseUrl "https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.version }}/"
 
       - name: Create Release and Upload Assets
