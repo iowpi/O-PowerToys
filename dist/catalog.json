@@ -1,19 +1,12 @@
 {
-  "version": "1.0.0",
+  "version": "v0.99.1",
   "modules": [
     {
-      "id": "ColorPicker",
-      "name": "Color Picker",
-      "version": "0.80.0",
-      "download_url": "https://example.com/downloads/ColorPicker.zip",
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    },
-    {
-      "id": "FancyZones",
-      "name": "FancyZones",
-      "version": "0.80.0",
-      "download_url": "https://example.com/downloads/FancyZones.zip",
-      "sha256": "f3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      "sha256": "480a0cda6d09d5e7c149080fb9da1bdbeb6c9afebad1204296b059592cabc0bd",
+      "name": "shadow_proxy",
+      "download_url": "https://github.com/iowpi/O-PowerToys/releases/download/v0.99.1/shadow_proxy.zip",
+      "version": "v0.99.1",
+      "id": "shadow_proxy"
     }
   ]
 }
