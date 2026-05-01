@@ -53,22 +53,43 @@ jobs:
         if: steps.check_version.outputs.skip != 'true'
         shell: pwsh
         run: |
-          Write-Host "Extracting PowerToysSetup.exe using 7-Zip..."
-          # 使用 7z 提取 Burn Bundle 内的内容 (不运行安装程序)
-          7z x PowerToysSetup.exe -oextracted_bundle
+          Write-Host "Installing WiX Toolset CLI..."
+          dotnet tool install --global wix
           
-          # 在提取出的目录中查找 MSI 文件 (通常在 AttachedContainer 目录下)
-          $msiPath = Get-ChildItem -Path "extracted_bundle" -Filter "*.msi" -Recurse | Select-Object -First 1 -ExpandProperty FullName
+          Write-Host "Extracting PowerToysSetup.exe using WiX..."
+          # wix burn extract is the official way to unpack a Burn bundle
+          mkdir extracted_wix
+          wix burn extract PowerToysSetup.exe -out extracted_wix
+          
+          # List files for debugging
+          Write-Host "Listing extracted files:"
+          Get-ChildItem -Path "extracted_wix" -Recurse | Select-Object FullName
+          
+          # Find the main MSI
+          $msiPath = Get-ChildItem -Path "extracted_wix" -Filter "*.msi" -Recurse | Select-Object -First 1 -ExpandProperty FullName
           Write-Host "Found MSI at: $msiPath"
           
-          # 使用 7z 提取 MSI 内的文件 (比 msiexec /a 更安全，不会挂起)
+          if ($null -eq $msiPath) {
+            throw "Failed to find MSI in the extracted WiX bundle."
+          }
+
+          # Extract MSI contents using 7z (since we have the MSI now)
           Write-Host "Extracting MSI contents..."
           7z x "$msiPath" -otemp_install
           
-          # 查找真正的 modules 目录位置
+          # Find the 'modules' directory
           $modulesParent = Get-ChildItem -Path "temp_install" -Directory -Recurse | Where-Object { Test-Path (Join-Path $_.FullName "modules") } | Select-Object -First 1 -ExpandProperty FullName
           Write-Host "Modules parent found at: $modulesParent"
           
+          if ($null -eq $modulesParent) {
+             # If 7z didn't work as expected, try msiexec /a as a fallback (sometimes 7z paths are weird in MSIs)
+             Write-Host "Modules not found with 7z, trying msiexec /a..."
+             $msiInstallDir = "$env:GITHUB_WORKSPACE\msi_install"
+             Start-Process -FilePath "msiexec.exe" -ArgumentList "/a", "`"$msiPath`"", "/qb", "TARGETDIR=`"$msiInstallDir`"" -Wait
+             $modulesParent = Get-ChildItem -Path "$msiInstallDir" -Directory -Recurse | Where-Object { Test-Path (Join-Path $_.FullName "modules") } | Select-Object -First 1 -ExpandProperty FullName
+             Write-Host "Modules parent (msiexec) found at: $modulesParent"
+          }
+
           if ($null -eq $modulesParent) {
             throw "Failed to locate 'modules' directory in the extracted files."
           }
