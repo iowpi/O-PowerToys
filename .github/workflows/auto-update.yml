@@ -53,46 +53,48 @@ jobs:
         if: steps.check_version.outputs.skip != 'true'
         shell: pwsh
         run: |
-          Write-Host "Installing WiX Toolset CLI..."
-          dotnet tool install --global wix
+          Write-Host "Installing WiX Toolset CLI v5 (Stable)..."
+          # 显式安装 v5.0.2，避开 v7 的 OSMF 许可问题
+          dotnet tool install --global wix --version 5.0.2
           
-          Write-Host "Extracting PowerToysSetup.exe using WiX..."
-          # wix burn extract is the official way to unpack a Burn bundle
+          Write-Host "Extracting PowerToysSetup.exe using WiX v5..."
+          if (!(Test-Path "PowerToysSetup.exe")) { throw "PowerToysSetup.exe not found!" }
+          
+          # 执行提取
           mkdir extracted_wix
           wix burn extract PowerToysSetup.exe -out extracted_wix
           
-          # List files for debugging
-          Write-Host "Listing extracted files:"
-          Get-ChildItem -Path "extracted_wix" -Recurse | Select-Object FullName
-          
-          # Find the main MSI
+          # 寻找 MSI (支持任意命名)
           $msiPath = Get-ChildItem -Path "extracted_wix" -Filter "*.msi" -Recurse | Select-Object -First 1 -ExpandProperty FullName
-          Write-Host "Found MSI at: $msiPath"
+          Write-Host "Target MSI identified: $msiPath"
           
           if ($null -eq $msiPath) {
-            throw "Failed to find MSI in the extracted WiX bundle."
+            Write-Error "No MSI found in bundle. Full directory structure for debugging:"
+            Get-ChildItem -Path "extracted_wix" -Recurse | Select-Object FullName
+            throw "Extraction failed: MSI payload not found."
           }
 
-          # Extract MSI contents using 7z (since we have the MSI now)
-          Write-Host "Extracting MSI contents..."
-          7z x "$msiPath" -otemp_install
+          # 使用 Windows 官方 msiexec /a 提取文件 (这是最稳健的方法)
+          Write-Host "Performing administrative extraction of MSI..."
+          $msiInstallDir = "$env:GITHUB_WORKSPACE\msi_install"
+          $process = Start-Process -FilePath "msiexec.exe" -ArgumentList "/a", "`"$msiPath`"", "/qb", "TARGETDIR=`"$msiInstallDir`"" -PassThru -Wait
           
-          # Find the 'modules' directory
-          $modulesParent = Get-ChildItem -Path "temp_install" -Directory -Recurse | Where-Object { Test-Path (Join-Path $_.FullName "modules") } | Select-Object -First 1 -ExpandProperty FullName
-          Write-Host "Modules parent found at: $modulesParent"
-          
-          if ($null -eq $modulesParent) {
-             # If 7z didn't work as expected, try msiexec /a as a fallback (sometimes 7z paths are weird in MSIs)
-             Write-Host "Modules not found with 7z, trying msiexec /a..."
-             $msiInstallDir = "$env:GITHUB_WORKSPACE\msi_install"
-             Start-Process -FilePath "msiexec.exe" -ArgumentList "/a", "`"$msiPath`"", "/qb", "TARGETDIR=`"$msiInstallDir`"" -Wait
-             $modulesParent = Get-ChildItem -Path "$msiInstallDir" -Directory -Recurse | Where-Object { Test-Path (Join-Path $_.FullName "modules") } | Select-Object -First 1 -ExpandProperty FullName
-             Write-Host "Modules parent (msiexec) found at: $modulesParent"
+          if ($process.ExitCode -ne 0) {
+            throw "msiexec failed with exit code $($process.ExitCode)"
           }
 
-          if ($null -eq $modulesParent) {
-            throw "Failed to locate 'modules' directory in the extracted files."
+          # 动态定位 modules 目录 (不再硬编码路径)
+          Write-Host "Scanning for 'modules' directory..."
+          $modulesFolder = Get-ChildItem -Path "$msiInstallDir" -Directory -Recurse | Where-Object { Test-Path (Join-Path $_.FullName "modules") } | Select-Object -First 1
+          
+          if ($null -eq $modulesFolder) {
+            Write-Error "Could not find 'modules' folder. Listing all extracted directories for debugging:"
+            Get-ChildItem -Path "$msiInstallDir" -Directory -Recurse | Select-Object FullName
+            throw "Failed to locate modules folder in extracted MSI."
           }
+
+          $modulesParent = $modulesFolder.FullName
+          Write-Host "Successfully located modules at: $modulesParent"
 
           # 运行提取工具
           .\tools\PowerToys-Extractor.ps1 -SourcePath "$modulesParent" -DistPath "publish_dist" -Version "${{ steps.get_version.outputs.version }}" -BaseUrl "https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.version }}/"
