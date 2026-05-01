@@ -1,0 +1,19 @@
+{
+  "version": "1.0.0",
+  "modules": [
+    {
+      "id": "ColorPicker",
+      "name": "Color Picker",
+      "version": "0.80.0",
+      "download_url": "https://example.com/downloads/ColorPicker.zip",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "id": "FancyZones",
+      "name": "FancyZones",
+      "version": "0.80.0",
+      "download_url": "https://example.com/downloads/FancyZones.zip",
+      "sha256": "f3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ]
+}

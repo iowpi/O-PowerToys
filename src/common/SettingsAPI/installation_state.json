@@ -1,0 +1,14 @@
+{
+  "modules": [
+    {
+      "module_name": "FancyZones",
+      "state": "NotInstalled",
+      "installed_version": ""
+    },
+    {
+      "module_name": "ColorPicker",
+      "state": "NotInstalled",
+      "installed_version": ""
+    }
+  ]
+}

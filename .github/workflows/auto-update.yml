@@ -1,0 +1,85 @@
+name: Auto Update PowerToys Modules
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # 每天午夜运行一次
+  workflow_dispatch: # 允许手动触发
+
+permissions:
+  contents: write
+
+jobs:
+  update-modules:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Get Latest PowerToys Release
+        id: get_version
+        shell: pwsh
+        run: |
+          $latestRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/microsoft/PowerToys/releases/latest"
+          $version = $latestRelease.tag_name
+          $downloadUrl = ($latestRelease.assets | Where-Object { $_.name -like "PowerToysSetup-*-x64.exe" }).browser_download_url
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+          echo "download_url=$downloadUrl" >> $env:GITHUB_OUTPUT
+          Write-Host "Latest version is $version"
+
+      - name: Check if Version already exists
+        id: check_version
+        shell: pwsh
+        run: |
+          $currentVersion = $null
+          if (Test-Path "dist/catalog.json") {
+            $catalog = Get-Content "dist/catalog.json" | ConvertFrom-Json
+            $currentVersion = $catalog.version
+          }
+          if ($currentVersion -eq "${{ steps.get_version.outputs.version }}") {
+            echo "skip=true" >> $env:GITHUB_OUTPUT
+            Write-Host "Version already up to date."
+          } else {
+            echo "skip=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Download Official PowerToys
+        if: steps.check_version.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "${{ steps.get_version.outputs.download_url }}" -OutFile "PowerToysSetup.exe"
+
+      - name: Extract Modules
+        if: steps.check_version.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          # 模拟安装以获取文件进行拆分（在 GitHub Actions 环境中）
+          Start-Process -FilePath ".\PowerToysSetup.exe" -ArgumentList "/passive", "/norestart", "/extract" -Wait
+          
+          # 运行我们的提取脚本
+          # 假设提取后的路径在 $env:TEMP\PowerToys
+          .\tools\PowerToys-Extractor.ps1 -SourcePath "C:\Program Files\PowerToys" -DistPath "publish_dist" -BaseUrl "https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.version }}/"
+
+      - name: Create Release and Upload Assets
+        if: steps.check_version.outputs.skip != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.get_version.outputs.version }}
+          files: |
+            publish_dist/modules/*.zip
+            publish_dist/catalog.json
+          body: |
+            Automated update to PowerToys ${{ steps.get_version.outputs.version }}
+            
+            This release contains the split modules for the dynamic installation feature.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update repository catalog
+        if: steps.check_version.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          Copy-Item "publish_dist/catalog.json" "dist/catalog.json" -Force
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add dist/catalog.json
+          git commit -m "chore: update catalog to ${{ steps.get_version.outputs.version }}"
+          git push

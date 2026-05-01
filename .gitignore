@@ -1,0 +1,40 @@
+# Visual Studio / .NET
+bin/
+obj/
+*.user
+*.userosscache
+*.sln.docattachments.res
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+*.pdb
+
+# C++
+*.obj
+*.exe
+*.dll
+*.lib
+*.exp
+*.log
+
+# Project Specific
+dist/modules/*.zip
+publish_dist/
+PowerToys/
+test_mock/
+dist_test/
+PowerToysSetup.exe
+compile_all.bat
+compile_shadow_proxy.bat
+test_loader.cpp
+test_loader.exe
+src/installer/PowerToys.InstallerService.TestClient/
+
+# OS
+.DS_Store
+Thumbs.db

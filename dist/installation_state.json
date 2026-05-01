@@ -1,0 +1,19 @@
+{
+  "installed_modules": [
+    {
+      "id": "Runner",
+      "version": "0.80.0",
+      "status": "Installed"
+    },
+    {
+      "id": "Settings",
+      "version": "0.80.0",
+      "status": "Installed"
+    },
+    {
+      "id": "ColorPicker",
+      "version": "0.80.0",
+      "status": "NotInstalled"
+    }
+  ]
+}
