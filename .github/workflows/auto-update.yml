@@ -61,7 +61,7 @@ jobs:
           call "%vs_path%\VC\Auxiliary\Build\vcvars64.bat"
           cl.exe /LD src/modules/shadow_proxy/main.cpp /Fe:src/modules/shadow_proxy/shadow_proxy.dll /EHsc
 
-      - name: Extract Modules (Professional Administrative Extraction)
+      - name: Extract Modules (Payload-Aware Extraction)
         if: steps.check_version.outputs.skip != 'true'
         shell: pwsh
         env:
@@ -75,29 +75,36 @@ jobs:
           mkdir raw_payload -Force
           wix burn extract PowerToysSetup.exe -o raw_payload
           
-          # 寻找真正的 MSI 文件
-          $msiPath = Get-ChildItem -Path "raw_payload" -Filter "*.msi" -Recurse | Select-Object -First 1 -ExpandProperty FullName
-          if ($null -eq $msiPath) { throw "MSI payload not found in bundle." }
-          Write-Host "Found MSI: $msiPath"
+          # 核心修复：寻找真正的载荷文件 (即使它没有后缀，如 'a2')
+          # 逻辑：寻找体积大于 100MB 的文件，它就是我们要的 MSI
+          $targetFile = Get-ChildItem -Path "raw_payload" -File -Recurse | Where-Object { $_.Length -gt 100MB } | Sort-Object Length -Descending | Select-Object -First 1
+          
+          if ($null -eq $targetFile) {
+              Write-Error "No MSI payload detected in bundle. Directory listing for debugging:"
+              Get-ChildItem -Path "raw_payload" -Recurse | Select-Object Name, Length
+              throw "Extraction failed: Payload identifying failed."
+          }
+
+          $msiPath = $targetFile.FullName
+          if ($targetFile.Extension -ne ".msi") {
+              $fixedMsiPath = $msiPath + ".msi"
+              Move-Item -Path $msiPath -Destination $fixedMsiPath -Force
+              $msiPath = $fixedMsiPath
+              Write-Host "Identified and renamed payload to: $msiPath"
+          }
 
           Write-Host "--- Stage 3: Official Administrative Extraction ---"
-          # 使用 msiexec /a 还原真实的文件夹结构
-          $msiInstallDir = "$env:GITHUB_WORKSPACE\msi_extracted"
+          $msiInstallDir = "$env:GITHUB_WORKSPACE\msi_full_tree"
           mkdir $msiInstallDir -Force
           $process = Start-Process -FilePath "msiexec.exe" -ArgumentList "/a", "`"$msiPath`"", "/qb", "TARGETDIR=`"$msiInstallDir`"" -PassThru -Wait
           if ($process.ExitCode -ne 0) { throw "msiexec failed with code $($process.ExitCode)" }
 
           Write-Host "--- Stage 4: Location Discovery ---"
-          # 寻找解压后的 modules 文件夹
-          $modulesTarget = Get-ChildItem -Path "$msiInstallDir" -Directory -Recurse | Where-Object { Test-Path (Join-Path $_.FullName "modules") } | Select-Object -First 1
-          if ($null -eq $modulesTarget) {
-              Write-Error "Could not find modules folder. Listing tree for investigation:"
-              Get-ChildItem -Path "$msiInstallDir" -Recurse | Select-Object FullName
-              throw "Final path resolution failed."
-          }
+          $modulesFolder = Get-ChildItem -Path "$msiInstallDir" -Directory -Recurse | Where-Object { Test-Path (Join-Path $_.FullName "modules") } | Select-Object -First 1
+          if ($null -eq $modulesFolder) { throw "Modules folder not found in MSI tree." }
           
-          $sourcePath = $modulesTarget.FullName
-          Write-Host "SUCCESS: Target identified at $sourcePath"
+          $sourcePath = $modulesFolder.FullName
+          Write-Host "SUCCESS: Modules located at $sourcePath"
 
           # 执行我们的提取工具
           .\tools\PowerToys-Extractor.ps1 -SourcePath "$sourcePath" -DistPath "publish_dist" -Version "${{ steps.get_version.outputs.version }}" -BaseUrl "https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.version }}/modules/"
@@ -110,18 +117,15 @@ jobs:
           $bundleName = "O-PowerToys-v${{ steps.get_version.outputs.version }}"
           mkdir $bundleName -Force
           
-          # 寻找 Runner 所在的根目录并拷贝
-          $ptRoot = Get-ChildItem -Path "msi_extracted" -Filter "PowerToys.exe" -Recurse | Select-Object -First 1 | ForEach-Object { $_.Directory.FullName }
+          $ptRoot = Get-ChildItem -Path "msi_full_tree" -Filter "PowerToys.exe" -Recurse | Select-Object -First 1 | ForEach-Object { $_.Directory.FullName }
           Copy-Item -Path "$ptRoot\*" -Destination $bundleName -Recurse -Force
           
-          # 覆盖影子模块和安装脚本
           mkdir "$bundleName\service" -Force
           Copy-Item -Path "dist/service/*" -Destination "$bundleName\service" -Recurse -Force
           Expand-Archive -Path "publish_dist/shadow_proxy.zip" -DestinationPath "$bundleName" -Force
           Copy-Item -Path "src/installer/PowerToys-Setup.ps1" -Destination "$bundleName\Install-O-PowerToys.ps1"
           Copy-Item -Path "publish_dist/catalog.json" -Destination $bundleName
           
-          # 最终压缩打包
           $zipPath = "publish_dist/O-PowerToys-ReadyToUse-v${{ steps.get_version.outputs.version }}.zip"
           Compress-Archive -Path "$bundleName\*" -DestinationPath $zipPath
           Write-Host "Ready-to-use bundle: $zipPath"
@@ -137,7 +141,6 @@ jobs:
             publish_dist/O-PowerToys-ReadyToUse-*.zip
           body: |
             ## 🚀 Dynamic PowerToys (Lite Edition) ${{ steps.get_version.outputs.version }}
-            全自动生成的“按需下载”版 PowerToys。
             
             ### 📥 如何使用:
             1. 下载下方的 **`O-PowerToys-ReadyToUse-vxxx.zip`** 并解压。
