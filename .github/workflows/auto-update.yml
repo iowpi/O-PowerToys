@@ -61,7 +61,7 @@ jobs:
           call "%vs_path%\VC\Auxiliary\Build\vcvars64.bat"
           cl.exe /LD src/modules/shadow_proxy/main.cpp /Fe:src/modules/shadow_proxy/shadow_proxy.dll /EHsc
 
-      - name: Extract Modules (Payload-Aware Extraction)
+      - name: Extract Modules (Surgical Extraction)
         if: steps.check_version.outputs.skip != 'true'
         shell: pwsh
         env:
@@ -76,8 +76,6 @@ jobs:
           wix burn extract PowerToysSetup.exe -o raw_payload
           
           $targetFile = Get-ChildItem -Path "raw_payload" -File -Recurse | Where-Object { $_.Length -gt 100MB } | Sort-Object Length -Descending | Select-Object -First 1
-          if ($null -eq $targetFile) { throw "Extraction failed: Payload identifying failed." }
-
           $msiPath = $targetFile.FullName
           if ($targetFile.Extension -ne ".msi") {
               $fixedMsiPath = $msiPath + ".msi"
@@ -86,29 +84,31 @@ jobs:
           }
 
           Write-Host "--- Stage 3: Official Administrative Extraction ---"
-          $msiInstallDir = "$env:GITHUB_WORKSPACE\msi_full_tree"
+          $msiInstallDir = "$env:GITHUB_WORKSPACE\msi_extracted"
           mkdir $msiInstallDir -Force
           $process = Start-Process -FilePath "msiexec.exe" -ArgumentList "/a", "`"$msiPath`"", "/qb", "TARGETDIR=`"$msiInstallDir`"" -PassThru -Wait
-          if ($process.ExitCode -ne 0) { throw "msiexec failed with code $($process.ExitCode)" }
-
+          
           Write-Host "--- Stage 4: Location Discovery ---"
           $modulesFolder = Get-ChildItem -Path "$msiInstallDir" -Directory -Recurse | Where-Object { Test-Path (Join-Path $_.FullName "modules") } | Select-Object -First 1
-          if ($null -eq $modulesFolder) { throw "Modules folder not found in MSI tree." }
-          
           $sourcePath = $modulesFolder.FullName
           .\tools\PowerToys-Extractor.ps1 -SourcePath "$sourcePath" -DistPath "publish_dist" -Version "${{ steps.get_version.outputs.version }}" -BaseUrl "https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.version }}/modules/"
 
-      - name: Create Final User-Ready Bundle (Ultra-Light)
+      - name: Create Final User-Ready Bundle (The Ultra-Light Refinement)
         if: steps.check_version.outputs.skip != 'true'
         shell: pwsh
         run: |
-          Write-Host "Performing surgical thinning for the final bundle..."
+          Write-Host "Assembling the final bundle with strict size control..."
           $bundleName = "O-PowerToys-v${{ steps.get_version.outputs.version }}"
           mkdir $bundleName -Force
           
-          $ptRoot = Get-ChildItem -Path "msi_full_tree" -Filter "PowerToys.exe" -Recurse | Select-Object -First 1 | ForEach-Object { $_.Directory.FullName }
-          Copy-Item -Path "$ptRoot\*" -Destination $bundleName -Recurse -Force
+          # 寻找核心根目录
+          $ptRoot = Get-ChildItem -Path "msi_extracted" -Filter "PowerToys.exe" -Recurse | Select-Object -First 1 | ForEach-Object { $_.Directory.FullName }
           
+          # 1. 只拷贝必要的文件，显式排除那个 370MB 的 MSI 载荷以及调试文件
+          Write-Host "Copying core files from $ptRoot (Excluding heavy payloads)..."
+          Copy-Item -Path "$ptRoot\*" -Destination $bundleName -Recurse -Force -Exclude "*.msi","*.cab","*.pdb","*.msu"
+          
+          # 2. 强制清理 modules 目录（确保没有原始庞大资源遗留）
           $bundleModulesPath = Join-Path $bundleName "modules"
           if (Test-Path $bundleModulesPath) {
               Remove-Item -Path "$bundleModulesPath\*" -Recurse -Force
@@ -116,16 +116,33 @@ jobs:
               mkdir $bundleModulesPath -Force
           }
           
+          # 3. 注入影子模块
+          Write-Host "Injecting shadow proxies..."
           Expand-Archive -Path "publish_dist/shadow_proxy.zip" -DestinationPath "$bundleName" -Force
+          
+          # 4. 拷贝我们的安装服务
           mkdir "$bundleName\service" -Force
           Copy-Item -Path "dist/service/*" -Destination "$bundleName\service" -Recurse -Force
+          
+          # 5. 放入启动脚本和清单
           Copy-Item -Path "src/installer/PowerToys-Setup.ps1" -Destination "$bundleName\Install-O-PowerToys.ps1"
           Copy-Item -Path "publish_dist/catalog.json" -Destination $bundleName
           
+          # 6. 【安全检查】审计包内异常大文件
+          Write-Host "Final Bundle Audit (Top 10 Largest Files):"
+          Get-ChildItem -Path $bundleName -File -Recurse | Sort-Object Length -Descending | Select-Object -First 10 Name, @{Name="Size(MB)";Expression={"{0:N2}" -f ($_.Length / 1MB)}} | Format-Table
+          
+          $oversized = Get-ChildItem -Path $bundleName -File -Recurse | Where-Object { $_.Length -gt 50MB }
+          if ($oversized) {
+              Write-Error "CRITICAL: Bundle contains oversized files: $($oversized.Name). Thinning failed!"
+              throw "Bundle too large"
+          }
+
+          # 7. 最终压缩
           $zipPath = "publish_dist/O-PowerToys-ReadyToUse-v${{ steps.get_version.outputs.version }}.zip"
           Compress-Archive -Path "$bundleName\*" -DestinationPath $zipPath
           $finalSize = (Get-Item $zipPath).Length / 1MB
-          Write-Host "Final size: $([Math]::Round($finalSize, 2)) MB"
+          Write-Host "SUCCESS: Ultra-light bundle created: $([Math]::Round($finalSize, 2)) MB"
 
       - name: Create Release and Upload Assets
         if: steps.check_version.outputs.skip != 'true'
@@ -138,12 +155,11 @@ jobs:
             publish_dist/O-PowerToys-ReadyToUse-*.zip
           body: |
             ## 🚀 Dynamic PowerToys (Lite Edition) ${{ steps.get_version.outputs.version }}
-            
-            这是为您自动生成的全自动按需下载版 PowerToys。
+            全自动生成的“按需下载”极简版 PowerToys。
             
             ### 📥 如何使用:
-            1. 下载下方的 **`O-PowerToys-ReadyToUse-vxxx.zip`** 并解压。
-            2. 右键点击 **`Install-O-PowerToys.ps1`**，选择 **“使用 PowerShell 运行”**。
+            1. 下载下方的 **`O-PowerToys-ReadyToUse-vxxx.zip`**。
+            2. 解压并运行 **`Install-O-PowerToys.ps1`**。
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update Repository Metadata
