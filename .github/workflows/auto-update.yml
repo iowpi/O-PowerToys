@@ -35,6 +35,14 @@ jobs:
         shell: pwsh
         run: |
           $targetVersion = "${{ steps.get_version.outputs.version }}"
+          $isManual = "${{ github.event_name }}" -eq "workflow_dispatch"
+          
+          if ($isManual) {
+            Write-Host "Manual trigger detected. Forcing execution."
+            echo "skip=false" >> $env:GITHUB_OUTPUT
+            return
+          }
+
           if (Test-Path "dist/catalog.json") {
             $catalog = Get-Content "dist/catalog.json" | ConvertFrom-Json
             if ($catalog.version -eq $targetVersion) {
