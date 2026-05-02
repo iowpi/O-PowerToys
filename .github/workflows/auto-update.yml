@@ -103,6 +103,40 @@ jobs:
           # 运行提取脚本 (自动包含影子模块打包)
           .\tools\PowerToys-Extractor.ps1 -SourcePath "$modulesParent" -DistPath "publish_dist" -Version "${{ steps.get_version.outputs.version }}" -BaseUrl "https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.version }}/modules/"
 
+      - name: Create Final User-Ready Bundle
+        if: steps.check_version.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          Write-Host "Assembling the final bundle for end-users..."
+          $bundleDir = "O-PowerToys-v${{ steps.get_version.outputs.version }}"
+          mkdir $bundleDir -Force
+          
+          # 1. 拷贝 PowerToys 主框架 (从最终解压出来的目录)
+          # 我们需要找到 Runner.exe 所在的根目录
+          $ptRoot = Get-ChildItem -Path "final_unpack" -Filter "PowerToys.exe" -Recurse | Select-Object -First 1 | ForEach-Object { $_.Directory.FullName }
+          Write-Host "Copying PowerToys framework from $ptRoot..."
+          Copy-Item -Path "$ptRoot\*" -Destination $bundleDir -Recurse -Force
+          
+          # 2. 拷贝我们的安装服务 (Service)
+          mkdir "$bundleDir\service" -Force
+          # 将当前仓库 dist 里的服务发布文件拷贝进去 (或者云端编译的)
+          Copy-Item -Path "dist/service/*" -Destination "$bundleDir\service" -Recurse -Force
+          
+          # 3. 拷贝影子模块 (覆盖掉原本巨大的模块)
+          # shadow_proxy.zip 里已经分好了层级，我们直接解压到模块目录
+          Expand-Archive -Path "publish_dist/shadow_proxy.zip" -DestinationPath "$bundleDir" -Force
+          
+          # 4. 拷贝安装脚本
+          Copy-Item -Path "src/installer/PowerToys-Setup.ps1" -Destination "$bundleDir\Install-O-PowerToys.ps1"
+          
+          # 5. 拷贝清单文件
+          Copy-Item -Path "publish_dist/catalog.json" -Destination $bundleDir
+          
+          # 6. 最终压缩
+          $finalZip = "O-PowerToys-ReadyToUse-v${{ steps.get_version.outputs.version }}.zip"
+          Compress-Archive -Path "$bundleDir\*" -DestinationPath "publish_dist/$finalZip"
+          Write-Host "Final user-ready bundle created: $finalZip"
+
       - name: Create Release and Upload Assets
         if: steps.check_version.outputs.skip != 'true'
         uses: softprops/action-gh-release@v2
@@ -110,12 +144,20 @@ jobs:
           tag_name: ${{ steps.get_version.outputs.version }}
           files: |
             publish_dist/modules/*.zip
-            publish_dist/shadow_proxy.zip
             publish_dist/catalog.json
+            publish_dist/O-PowerToys-ReadyToUse-*.zip
           body: |
-            Automated Dynamic PowerToys Release ${{ steps.get_version.outputs.version }}
+            ## 🚀 Dynamic PowerToys (Lite Edition) ${{ steps.get_version.outputs.version }}
             
-            This release contains split modules for on-demand installation.
+            这是为您自动生成的全自动按需下载版 PowerToys。
+            
+            ### 📥 如何使用 (普通用户):
+            1. 下载下方的 **`O-PowerToys-ReadyToUse-vxxx.zip`**。
+            2. 解压到您喜欢的任意目录。
+            3. 右键点击 **`Install-O-PowerToys.ps1`**，选择 **“使用 PowerShell 运行”**（需管理员权限）。
+            4. 尽情享受极速启动、极低占用的 PowerToys！
+            
+            *本发布由机器人自动维护，实时同步微软官方最新版本。*
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update Repository Metadata
