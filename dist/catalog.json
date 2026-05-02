@@ -1,12 +1,12 @@
 {
-  "version": "v0.99.1",
   "modules": [
     {
+      "download_url": "https://github.com/iowpi/O-PowerToys/releases/download/v0.99.1/modules/Microsoft.PowerToys.Configure.zip",
       "sha256": "659b975c62f39694657809e2363b16c885da1b73fc32505cedfe8e762f3ce4ab",
-      "version": "v0.99.1",
       "name": "Microsoft.PowerToys.Configure",
       "id": "Microsoft.PowerToys.Configure",
-      "download_url": "https://github.com/iowpi/O-PowerToys/releases/download/v0.99.1/modules/Microsoft.PowerToys.Configure.zip"
+      "version": "v0.99.1"
     }
-  ]
+  ],
+  "version": "v0.99.1"
 }
