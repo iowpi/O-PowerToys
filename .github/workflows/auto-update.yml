@@ -36,18 +36,15 @@ jobs:
         run: |
           $targetVersion = "${{ steps.get_version.outputs.version }}"
           $isManual = "${{ github.event_name }}" -eq "workflow_dispatch"
-          
           if ($isManual) {
-            Write-Host "Manual trigger detected. Forcing execution."
+            Write-Host "Manual trigger. Forcing execution."
             echo "skip=false" >> $env:GITHUB_OUTPUT
             return
           }
-
           if (Test-Path "dist/catalog.json") {
             $catalog = Get-Content "dist/catalog.json" | ConvertFrom-Json
             if ($catalog.version -eq $targetVersion) {
               echo "skip=true" >> $env:GITHUB_OUTPUT
-              Write-Host "Catalog already at version $targetVersion. Skipping."
               return
             }
           }
@@ -64,9 +61,7 @@ jobs:
         if: steps.check_version.outputs.skip != 'true'
         shell: cmd
         run: |
-          for /f "usebackq tokens=*" %%i in (`vswhere.exe -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (
-            set "vs_path=%%i"
-          )
+          for /f "usebackq tokens=*" %%i in (`vswhere.exe -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (set "vs_path=%%i")
           call "%vs_path%\VC\Auxiliary\Build\vcvars64.bat"
           cl.exe /LD src/modules/shadow_proxy/main.cpp /Fe:src/modules/shadow_proxy/shadow_proxy.dll /EHsc
 
@@ -76,14 +71,10 @@ jobs:
         env:
           WIX_ACCEPT_OSMF_EULA: 1
         run: |
-          Write-Host "--- Stage 1: Toolchain Setup ---"
           dotnet tool uninstall --global wix | Out-Null
           dotnet tool install --global wix --version 5.0.2
-          
-          Write-Host "--- Stage 2: Breaking the Burn Bundle ---"
           mkdir raw_payload -Force
           wix burn extract PowerToysSetup.exe -o raw_payload
-          
           $targetFile = Get-ChildItem -Path "raw_payload" -File -Recurse | Where-Object { $_.Length -gt 100MB } | Sort-Object Length -Descending | Select-Object -First 1
           $msiPath = $targetFile.FullName
           if ($targetFile.Extension -ne ".msi") {
@@ -91,65 +82,65 @@ jobs:
               Move-Item -Path $msiPath -Destination $fixedMsiPath -Force
               $msiPath = $fixedMsiPath
           }
-
-          Write-Host "--- Stage 3: Official Administrative Extraction ---"
           $msiInstallDir = "$env:GITHUB_WORKSPACE\msi_full_tree"
           mkdir $msiInstallDir -Force
-          $process = Start-Process -FilePath "msiexec.exe" -ArgumentList "/a", "`"$msiPath`"", "/qb", "TARGETDIR=`"$msiInstallDir`"" -PassThru -Wait
-          if ($process.ExitCode -ne 0) { throw "msiexec failed with code $($process.ExitCode)" }
-
-          Write-Host "--- Stage 4: Location Discovery ---"
+          Start-Process -FilePath "msiexec.exe" -ArgumentList "/a", "`"$msiPath`"", "/qb", "TARGETDIR=`"$msiInstallDir`"" -Wait
           $modulesFolder = Get-ChildItem -Path "$msiInstallDir" -Directory -Recurse | Where-Object { Test-Path (Join-Path $_.FullName "modules") } | Select-Object -First 1
-          $sourcePath = $modulesFolder.FullName
-          .\tools\PowerToys-Extractor.ps1 -SourcePath "$sourcePath" -DistPath "publish_dist" -Version "${{ steps.get_version.outputs.version }}" -BaseUrl "https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.version }}/modules/"
+          .\tools\PowerToys-Extractor.ps1 -SourcePath "$($modulesFolder.FullName)" -DistPath "publish_dist" -Version "${{ steps.get_version.outputs.version }}" -BaseUrl "https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.version }}/modules/"
 
       - name: Create Final User-Ready Bundle (The Ultra-Light Refinement)
         if: steps.check_version.outputs.skip != 'true'
         shell: pwsh
         run: |
-          Write-Host "Assembling the final bundle with strict size control..."
+          Write-Host "Assembling the final bundle with aggressive slimming..."
           $bundleName = "O-PowerToys-v${{ steps.get_version.outputs.version }}"
           mkdir $bundleName -Force
           
+          # 1. 寻找核心根目录
           $ptRoot = Get-ChildItem -Path "msi_full_tree" -Filter "PowerToys.exe" -Recurse | Select-Object -First 1 | ForEach-Object { $_.Directory.FullName }
           
-          # 1. 精确拷贝，排除所有已知安装包格式、调试符号和 MSIX
-          Write-Host "Copying core files and excluding heavy payloads..."
-          $excludeList = "*.msi","*.cab","*.pdb","*.msu","*.msix","*.appx","*.msixbundle"
-          Copy-Item -Path "$ptRoot\*" -Destination $bundleName -Recurse -Force -Exclude $excludeList
+          # 2. 全量拷贝
+          Write-Host "Initial copy from $ptRoot..."
+          Copy-Item -Path "$ptRoot\*" -Destination $bundleName -Recurse -Force
           
-          # 2. 彻底清理模块资源
+          # 3. 【强力物理删除】排除所有安装包、调试文件、临时文件
+          Write-Host "Surgically removing heavy non-essential files..."
+          $heavyExtensions = @("*.msi", "*.cab", "*.msix", "*.appx", "*.msixbundle", "*.pdb", "*.msu", "*.wixpdb")
+          foreach ($ext in $heavyExtensions) {
+              Get-ChildItem -Path $bundleName -Include $ext -Recurse -Force | Remove-Item -Force -ErrorAction SilentlyContinue
+          }
+
+          # 4. 【核心重手术】彻底清空原始模块
           $bundleModulesPath = Join-Path $bundleName "modules"
           if (Test-Path $bundleModulesPath) {
+              Write-Host "Flushing original modules directory..."
               Remove-Item -Path "$bundleModulesPath\*" -Recurse -Force
           } else {
               mkdir $bundleModulesPath -Force
           }
           
-          # 3. 注入影子代理
-          Write-Host "Injecting shadow proxies..."
+          # 5. 注入影子代理 (只有几十 KB)
+          Write-Host "Injecting light-weight shadow proxies..."
           Expand-Archive -Path "publish_dist/shadow_proxy.zip" -DestinationPath "$bundleName" -Force
           
-          # 4. 拷贝服务组件
+          # 6. 拷贝服务组件、脚本和清单
           mkdir "$bundleName\service" -Force
           Copy-Item -Path "dist/service/*" -Destination "$bundleName\service" -Recurse -Force
-          
-          # 5. 放入启动脚本和清单
           Copy-Item -Path "src/installer/PowerToys-Setup.ps1" -Destination "$bundleName\Install-O-PowerToys.ps1"
           Copy-Item -Path "publish_dist/catalog.json" -Destination $bundleName
           
-          # 6. 【体积审计】
+          # 7. 【体积审计】
           Write-Host "Final Bundle Audit (Top 10 Largest Files):"
           Get-ChildItem -Path $bundleName -File -Recurse | Sort-Object Length -Descending | Select-Object -First 10 Name, @{Name="Size(MB)";Expression={"{0:N2}" -f ($_.Length / 1MB)}} | Format-Table
           
-          # 设置 80MB 的硬性红线（足以拦截 MSIX 包，但容忍大型系统 DLL）
-          $oversized = Get-ChildItem -Path $bundleName -File -Recurse | Where-Object { $_.Length -gt 80MB }
+          # 红线设为 40MB（足以干掉 MSIX 包，只允许必要的核心 DLL 存在）
+          $oversized = Get-ChildItem -Path $bundleName -File -Recurse | Where-Object { $_.Length -gt 40MB }
           if ($oversized) {
-              Write-Error "CRITICAL: Bundle contains oversized files: $($oversized.Name). Thinning failed!"
+              Write-Error "CRITICAL: Bundle still contains heavy files: $($oversized.Name). Slimming failed!"
               throw "Bundle protection fault"
           }
 
-          # 7. 最终压缩
+          # 8. 最终压缩
           $zipPath = "publish_dist/O-PowerToys-ReadyToUse-v${{ steps.get_version.outputs.version }}.zip"
           Compress-Archive -Path "$bundleName\*" -DestinationPath $zipPath
           $finalSize = (Get-Item $zipPath).Length / 1MB
