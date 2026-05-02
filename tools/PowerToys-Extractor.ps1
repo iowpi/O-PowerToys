@@ -56,13 +56,14 @@ foreach ($Module in $Modules) {
             Remove-Item $ZipPath -Force
         }
         
-        Write-Host "  Zipping to $ZipPath..."
+        Write-Host "  Zipping module content to $ZipPath..."
+        # 压缩真正的模块文件
         Compress-Archive -Path $Module.FullName -DestinationPath $ZipPath
         
         Write-Host "  Calculating SHA256..."
         $Hash = (Get-FileHash -Path $ZipPath -Algorithm SHA256).Hash.ToLower()
     } else {
-        Write-Host "  [DryRun] Would zip to $ZipPath"
+        Write-Host "  [DryRun] Would zip module to $ZipPath"
         $Hash = "DRY_RUN_HASH"
     }
     
@@ -72,6 +73,27 @@ foreach ($Module in $Modules) {
         version = $Version
         download_url = "$BaseUrl$ZipName"
         sha256 = $Hash
+    }
+}
+
+# --- 新增：生成影子模块包 ---
+if (-not $DryRun) {
+    Write-Host "Generating Shadow Modules Bundle..." -ForegroundColor Yellow
+    $ShadowDistPath = Join-Path $DistPath "shadow_proxy"
+    mkdir $ShadowDistPath -Force | Out-Null
+    
+    # 假设编译好的影子 DLL 在 src/modules/shadow_proxy/shadow_proxy.dll
+    $ShadowDllSource = "src/modules/shadow_proxy/shadow_proxy.dll"
+    if (Test-Path $ShadowDllSource) {
+        foreach ($m in $CatalogModules) {
+            $mDir = Join-Path $ShadowDistPath "modules\$($m.id)"
+            mkdir $mDir -Force | Out-Null
+            Copy-Item $ShadowDllSource (Join-Path $mDir "$($m.id).dll")
+        }
+        $ShadowZipPath = Join-Path $DistPath "shadow_proxy.zip"
+        if (Test-Path $ShadowZipPath) { Remove-Item $ShadowZipPath }
+        Compress-Archive -Path "$ShadowDistPath\*" -DestinationPath $ShadowZipPath
+        Write-Host "Shadow bundle created: $ShadowZipPath"
     }
 }
 
