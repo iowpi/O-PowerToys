@@ -75,22 +75,14 @@ jobs:
           mkdir raw_payload -Force
           wix burn extract PowerToysSetup.exe -o raw_payload
           
-          # 核心修复：寻找真正的载荷文件 (即使它没有后缀，如 'a2')
-          # 逻辑：寻找体积大于 100MB 的文件，它就是我们要的 MSI
           $targetFile = Get-ChildItem -Path "raw_payload" -File -Recurse | Where-Object { $_.Length -gt 100MB } | Sort-Object Length -Descending | Select-Object -First 1
-          
-          if ($null -eq $targetFile) {
-              Write-Error "No MSI payload detected in bundle. Directory listing for debugging:"
-              Get-ChildItem -Path "raw_payload" -Recurse | Select-Object Name, Length
-              throw "Extraction failed: Payload identifying failed."
-          }
+          if ($null -eq $targetFile) { throw "Extraction failed: Payload identifying failed." }
 
           $msiPath = $targetFile.FullName
           if ($targetFile.Extension -ne ".msi") {
               $fixedMsiPath = $msiPath + ".msi"
               Move-Item -Path $msiPath -Destination $fixedMsiPath -Force
               $msiPath = $fixedMsiPath
-              Write-Host "Identified and renamed payload to: $msiPath"
           }
 
           Write-Host "--- Stage 3: Official Administrative Extraction ---"
@@ -104,31 +96,36 @@ jobs:
           if ($null -eq $modulesFolder) { throw "Modules folder not found in MSI tree." }
           
           $sourcePath = $modulesFolder.FullName
-          Write-Host "SUCCESS: Modules located at $sourcePath"
-
-          # 执行我们的提取工具
           .\tools\PowerToys-Extractor.ps1 -SourcePath "$sourcePath" -DistPath "publish_dist" -Version "${{ steps.get_version.outputs.version }}" -BaseUrl "https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.version }}/modules/"
 
-      - name: Create Final User-Ready Bundle
+      - name: Create Final User-Ready Bundle (Ultra-Light)
         if: steps.check_version.outputs.skip != 'true'
         shell: pwsh
         run: |
-          Write-Host "Assembling the final bundle..."
+          Write-Host "Performing surgical thinning for the final bundle..."
           $bundleName = "O-PowerToys-v${{ steps.get_version.outputs.version }}"
           mkdir $bundleName -Force
           
           $ptRoot = Get-ChildItem -Path "msi_full_tree" -Filter "PowerToys.exe" -Recurse | Select-Object -First 1 | ForEach-Object { $_.Directory.FullName }
           Copy-Item -Path "$ptRoot\*" -Destination $bundleName -Recurse -Force
           
+          $bundleModulesPath = Join-Path $bundleName "modules"
+          if (Test-Path $bundleModulesPath) {
+              Remove-Item -Path "$bundleModulesPath\*" -Recurse -Force
+          } else {
+              mkdir $bundleModulesPath -Force
+          }
+          
+          Expand-Archive -Path "publish_dist/shadow_proxy.zip" -DestinationPath "$bundleName" -Force
           mkdir "$bundleName\service" -Force
           Copy-Item -Path "dist/service/*" -Destination "$bundleName\service" -Recurse -Force
-          Expand-Archive -Path "publish_dist/shadow_proxy.zip" -DestinationPath "$bundleName" -Force
           Copy-Item -Path "src/installer/PowerToys-Setup.ps1" -Destination "$bundleName\Install-O-PowerToys.ps1"
           Copy-Item -Path "publish_dist/catalog.json" -Destination $bundleName
           
           $zipPath = "publish_dist/O-PowerToys-ReadyToUse-v${{ steps.get_version.outputs.version }}.zip"
           Compress-Archive -Path "$bundleName\*" -DestinationPath $zipPath
-          Write-Host "Ready-to-use bundle: $zipPath"
+          $finalSize = (Get-Item $zipPath).Length / 1MB
+          Write-Host "Final size: $([Math]::Round($finalSize, 2)) MB"
 
       - name: Create Release and Upload Assets
         if: steps.check_version.outputs.skip != 'true'
@@ -141,6 +138,8 @@ jobs:
             publish_dist/O-PowerToys-ReadyToUse-*.zip
           body: |
             ## 🚀 Dynamic PowerToys (Lite Edition) ${{ steps.get_version.outputs.version }}
+            
+            这是为您自动生成的全自动按需下载版 PowerToys。
             
             ### 📥 如何使用:
             1. 下载下方的 **`O-PowerToys-ReadyToUse-vxxx.zip`** 并解压。
