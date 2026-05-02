@@ -91,8 +91,18 @@ try {
     Write-Host "- Modules Path: $ModulesDir"
 
     Write-Host "`nInstallation finished successfully."
+    Write-Host "`nPress any key to exit..." -ForegroundColor Gray
+    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
 
 } catch {
-    Write-Host "`nInstallation FAILED: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "`n[!] Installation FAILED" -ForegroundColor Red
+    Write-Host "Error Detail: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "`nPossible Solutions:"
+    Write-Host "1. Ensure you are running as Administrator (Right-click -> Run with PowerShell)."
+    Write-Host "2. Check if an antivirus is blocking the Service registration."
+    Write-Host "3. Ensure all files from the ZIP were extracted properly."
+    
+    Write-Host "`nPress any key to exit and view logs..." -ForegroundColor Gray
+    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
     exit 1
 }
