@@ -34,11 +34,12 @@ jobs:
         id: check_version
         shell: pwsh
         run: |
+          $targetVersion = "${{ steps.get_version.outputs.version }}"
           if (Test-Path "dist/catalog.json") {
             $catalog = Get-Content "dist/catalog.json" | ConvertFrom-Json
-            if ($catalog.version -eq "${{ steps.get_version.outputs.version }}") {
+            if ($catalog.version -eq $targetVersion) {
               echo "skip=true" >> $env:GITHUB_OUTPUT
-              Write-Host "Catalog already at version $version. Skipping."
+              Write-Host "Catalog already at version $targetVersion. Skipping."
               return
             }
           }
