@@ -61,7 +61,7 @@ jobs:
           call "%vs_path%\VC\Auxiliary\Build\vcvars64.bat"
           cl.exe /LD src/modules/shadow_proxy/main.cpp /Fe:src/modules/shadow_proxy/shadow_proxy.dll /EHsc
 
-      - name: Extract Modules (Surgical Extraction)
+      - name: Extract Modules (Payload-Aware Extraction)
         if: steps.check_version.outputs.skip != 'true'
         shell: pwsh
         env:
@@ -84,10 +84,11 @@ jobs:
           }
 
           Write-Host "--- Stage 3: Official Administrative Extraction ---"
-          $msiInstallDir = "$env:GITHUB_WORKSPACE\msi_extracted"
+          $msiInstallDir = "$env:GITHUB_WORKSPACE\msi_full_tree"
           mkdir $msiInstallDir -Force
           $process = Start-Process -FilePath "msiexec.exe" -ArgumentList "/a", "`"$msiPath`"", "/qb", "TARGETDIR=`"$msiInstallDir`"" -PassThru -Wait
-          
+          if ($process.ExitCode -ne 0) { throw "msiexec failed with code $($process.ExitCode)" }
+
           Write-Host "--- Stage 4: Location Discovery ---"
           $modulesFolder = Get-ChildItem -Path "$msiInstallDir" -Directory -Recurse | Where-Object { Test-Path (Join-Path $_.FullName "modules") } | Select-Object -First 1
           $sourcePath = $modulesFolder.FullName
@@ -101,14 +102,14 @@ jobs:
           $bundleName = "O-PowerToys-v${{ steps.get_version.outputs.version }}"
           mkdir $bundleName -Force
           
-          # 寻找核心根目录
-          $ptRoot = Get-ChildItem -Path "msi_extracted" -Filter "PowerToys.exe" -Recurse | Select-Object -First 1 | ForEach-Object { $_.Directory.FullName }
+          $ptRoot = Get-ChildItem -Path "msi_full_tree" -Filter "PowerToys.exe" -Recurse | Select-Object -First 1 | ForEach-Object { $_.Directory.FullName }
           
-          # 1. 只拷贝必要的文件，显式排除那个 370MB 的 MSI 载荷以及调试文件
-          Write-Host "Copying core files from $ptRoot (Excluding heavy payloads)..."
-          Copy-Item -Path "$ptRoot\*" -Destination $bundleName -Recurse -Force -Exclude "*.msi","*.cab","*.pdb","*.msu"
+          # 1. 精确拷贝，排除所有已知安装包格式、调试符号和 MSIX
+          Write-Host "Copying core files and excluding heavy payloads..."
+          $excludeList = "*.msi","*.cab","*.pdb","*.msu","*.msix","*.appx","*.msixbundle"
+          Copy-Item -Path "$ptRoot\*" -Destination $bundleName -Recurse -Force -Exclude $excludeList
           
-          # 2. 强制清理 modules 目录（确保没有原始庞大资源遗留）
+          # 2. 彻底清理模块资源
           $bundleModulesPath = Join-Path $bundleName "modules"
           if (Test-Path $bundleModulesPath) {
               Remove-Item -Path "$bundleModulesPath\*" -Recurse -Force
@@ -116,11 +117,11 @@ jobs:
               mkdir $bundleModulesPath -Force
           }
           
-          # 3. 注入影子模块
+          # 3. 注入影子代理
           Write-Host "Injecting shadow proxies..."
           Expand-Archive -Path "publish_dist/shadow_proxy.zip" -DestinationPath "$bundleName" -Force
           
-          # 4. 拷贝我们的安装服务
+          # 4. 拷贝服务组件
           mkdir "$bundleName\service" -Force
           Copy-Item -Path "dist/service/*" -Destination "$bundleName\service" -Recurse -Force
           
@@ -128,14 +129,15 @@ jobs:
           Copy-Item -Path "src/installer/PowerToys-Setup.ps1" -Destination "$bundleName\Install-O-PowerToys.ps1"
           Copy-Item -Path "publish_dist/catalog.json" -Destination $bundleName
           
-          # 6. 【安全检查】审计包内异常大文件
+          # 6. 【体积审计】
           Write-Host "Final Bundle Audit (Top 10 Largest Files):"
           Get-ChildItem -Path $bundleName -File -Recurse | Sort-Object Length -Descending | Select-Object -First 10 Name, @{Name="Size(MB)";Expression={"{0:N2}" -f ($_.Length / 1MB)}} | Format-Table
           
-          $oversized = Get-ChildItem -Path $bundleName -File -Recurse | Where-Object { $_.Length -gt 50MB }
+          # 设置 80MB 的硬性红线（足以拦截 MSIX 包，但容忍大型系统 DLL）
+          $oversized = Get-ChildItem -Path $bundleName -File -Recurse | Where-Object { $_.Length -gt 80MB }
           if ($oversized) {
               Write-Error "CRITICAL: Bundle contains oversized files: $($oversized.Name). Thinning failed!"
-              throw "Bundle too large"
+              throw "Bundle protection fault"
           }
 
           # 7. 最终压缩
@@ -155,7 +157,6 @@ jobs:
             publish_dist/O-PowerToys-ReadyToUse-*.zip
           body: |
             ## 🚀 Dynamic PowerToys (Lite Edition) ${{ steps.get_version.outputs.version }}
-            全自动生成的“按需下载”极简版 PowerToys。
             
             ### 📥 如何使用:
             1. 下载下方的 **`O-PowerToys-ReadyToUse-vxxx.zip`**。
